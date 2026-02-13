@@ -1,0 +1,141 @@
+# Harmoniq - Docker Compose Configuration
+# Deploy on Alpine Linux: docker compose up -d --build
+
+services:
+  # Reverse proxy & TLS termination
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./infra/nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infra/nginx/conf.d:/etc/nginx/conf.d:ro
+      - ./frontend/dist:/usr/share/nginx/html:ro
+      - certbot-webroot:/var/www/certbot:ro
+      - certbot-certs:/etc/letsencrypt:ro
+    depends_on:
+      - backend
+    restart: unless-stopped
+    networks:
+      - harmoniq
+
+  # Backend API & WebSocket server
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      - NODE_ENV=production
+      - PORT=4000
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=${DB_USER:-harmoniq}
+      - DB_PASSWORD=${DB_PASSWORD:-harmoniq_secret}
+      - DB_NAME=${DB_NAME:-harmoniq}
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - MINIO_ENDPOINT=minio
+      - MINIO_PORT=9000
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-harmoniq}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-harmoniq_secret}
+      - MINIO_BUCKET=harmoniq-uploads
+      - JWT_SECRET=${JWT_SECRET:-change-me-in-production}
+      - JWT_REFRESH_SECRET=${JWT_REFRESH_SECRET:-change-me-refresh}
+      - COTURN_HOST=coturn
+      - COTURN_PORT=3478
+      - COTURN_SECRET=${COTURN_SECRET:-harmoniq-turn-secret}
+      - CORS_ORIGIN=${CORS_ORIGIN:-http://localhost}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - harmoniq
+
+  # PostgreSQL database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=${DB_USER:-harmoniq}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-harmoniq_secret}
+      - POSTGRES_DB=${DB_NAME:-harmoniq}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-harmoniq}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - harmoniq
+
+  # Redis cache & pub/sub
+  redis:
+    image: redis:alpine
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - harmoniq
+
+  # MinIO object storage
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=${MINIO_ACCESS_KEY:-harmoniq}
+      - MINIO_ROOT_PASSWORD=${MINIO_SECRET_KEY:-harmoniq_secret}
+    volumes:
+      - minio-data:/data
+    ports:
+      - "9001:9001"
+    restart: unless-stopped
+    networks:
+      - harmoniq
+
+  # TURN/STUN server for WebRTC
+  coturn:
+    image: coturn/coturn:alpine
+    volumes:
+      - ./infra/coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    ports:
+      - "3478:3478"
+      - "3478:3478/udp"
+      - "5349:5349"
+      - "5349:5349/udp"
+      - "49152-49200:49152-49200/udp"
+    restart: unless-stopped
+    networks:
+      - harmoniq
+
+  # Certbot for TLS certificates (optional)
+  certbot:
+    image: certbot/certbot
+    volumes:
+      - certbot-webroot:/var/www/certbot
+      - certbot-certs:/etc/letsencrypt
+    entrypoint: "/bin/sh -c 'trap exit TERM; while :; do sleep 12h; certbot renew; done'"
+    profiles:
+      - tls
+
+volumes:
+  postgres-data:
+  redis-data:
+  minio-data:
+  certbot-webroot:
+  certbot-certs:
+
+networks:
+  harmoniq:
+    driver: bridge
