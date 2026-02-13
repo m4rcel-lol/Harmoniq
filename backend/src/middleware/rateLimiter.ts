@@ -2,6 +2,16 @@ import { Request, Response, NextFunction } from 'express';
 
 const requestCounts = new Map<string, { count: number; resetAt: number }>();
 
+// Periodically clean up expired entries to prevent unbounded memory growth
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, record] of requestCounts) {
+    if (now > record.resetAt) {
+      requestCounts.delete(key);
+    }
+  }
+}, 60000).unref();
+
 export function rateLimiter(maxRequests: number = 100, windowMs: number = 60000) {
   return (req: Request, res: Response, next: NextFunction): void => {
     const key = req.ip || 'unknown';

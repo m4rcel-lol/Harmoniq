@@ -1,8 +1,13 @@
-import { Server as SocketServer } from 'socket.io';
+import { Server as SocketServer, Socket } from 'socket.io';
 import { Server } from 'http';
 import jwt from 'jsonwebtoken';
 import { config } from '../config';
 import { query } from '../models/db';
+
+interface AuthenticatedSocket extends Socket {
+  userId: string;
+  username: string;
+}
 
 export function setupWebSocket(server: Server) {
   const io = new SocketServer(server, {
@@ -23,8 +28,8 @@ export function setupWebSocket(server: Server) {
 
     try {
       const payload = jwt.verify(token, config.jwt.secret) as { userId: string; username: string };
-      (socket as any).userId = payload.userId;
-      (socket as any).username = payload.username;
+      (socket as AuthenticatedSocket).userId = payload.userId;
+      (socket as AuthenticatedSocket).username = payload.username;
       next();
     } catch {
       next(new Error('Invalid token'));
@@ -32,8 +37,8 @@ export function setupWebSocket(server: Server) {
   });
 
   io.on('connection', async (socket) => {
-    const userId = (socket as any).userId;
-    const username = (socket as any).username;
+    const userId = (socket as AuthenticatedSocket).userId;
+    const username = (socket as AuthenticatedSocket).username;
     console.log(`User connected: ${username} (${userId})`);
 
     // Update presence

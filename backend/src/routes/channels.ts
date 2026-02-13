@@ -55,18 +55,40 @@ router.get('/:id/messages', authenticate, async (req: AuthRequest, res: Response
     params.push(limit);
 
     const result = await query(queryStr, params);
-
-    // Fetch attachments and reactions for each message
     const messages = result.rows;
-    for (const msg of messages) {
-      const attachments = await query('SELECT * FROM attachments WHERE message_id = $1', [msg.id]);
-      msg.attachments = attachments.rows;
 
-      const reactions = await query(
-        `SELECT emoji, array_agg(user_id) as user_ids, COUNT(*) as count FROM reactions WHERE message_id = $1 GROUP BY emoji`,
-        [msg.id]
+    if (messages.length > 0) {
+      const messageIds = messages.map((m: any) => m.id);
+
+      // Batch fetch attachments for all messages
+      const attachments = await query(
+        'SELECT * FROM attachments WHERE message_id = ANY($1)',
+        [messageIds]
       );
-      msg.reactions = reactions.rows;
+      const attachmentsByMsg = new Map<string, any[]>();
+      for (const att of attachments.rows) {
+        const list = attachmentsByMsg.get(att.message_id) || [];
+        list.push(att);
+        attachmentsByMsg.set(att.message_id, list);
+      }
+
+      // Batch fetch reactions for all messages
+      const reactions = await query(
+        `SELECT message_id, emoji, array_agg(user_id) as user_ids, COUNT(*) as count
+         FROM reactions WHERE message_id = ANY($1) GROUP BY message_id, emoji`,
+        [messageIds]
+      );
+      const reactionsByMsg = new Map<string, any[]>();
+      for (const r of reactions.rows) {
+        const list = reactionsByMsg.get(r.message_id) || [];
+        list.push({ emoji: r.emoji, user_ids: r.user_ids, count: r.count });
+        reactionsByMsg.set(r.message_id, list);
+      }
+
+      for (const msg of messages) {
+        msg.attachments = attachmentsByMsg.get(msg.id) || [];
+        msg.reactions = reactionsByMsg.get(msg.id) || [];
+      }
     }
 
     res.json(messages.reverse());
